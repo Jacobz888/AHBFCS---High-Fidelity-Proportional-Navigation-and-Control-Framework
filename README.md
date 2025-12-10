@@ -2,7 +2,7 @@
 
 ##  Overview: The Pursuit of Optimized Intercept Trajectories
 
-The Autonomous High-Bandwidth Flight Control System (AHBFCS) is a theoretical, open-source embedded software framework designed for the rigorous study and implementation of advanced control principles, specifically focusing on the realization of a robust, real-time control loop executing the **Proportional Navigation (PN)** guidance law.
+The Autonomous High-Bandwidth Flight Control System (AHBFCS) is a theoretical,  embedded software framework designed for the rigorous study and implementation of advanced control principles, specifically focusing on the realization of a robust, real-time control loop executing the **Proportional Navigation (PN)** guidance law, like the AIM-9 Sidewinder or similar military project.
 
 This project serves as an intellectual laboratory for researchers and students interested in:
 * **Sensor Fusion:** Combining high-rate IMU data with passive optical/IR tracking signals.
