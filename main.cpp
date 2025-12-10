@@ -1,148 +1,156 @@
-// Define the control loop frequency (Hz)
-#define GNC_FREQUENCY 200.0 
-#define DELTA_T (1.0 / GNC_FREQUENCY) // Time step in seconds
+#include "system_config.h"
+#include "control_gains.h"
+#include "kalman_filter.h"
+#include "pid_controller.h"
+#include "pro_nav.h"
+#include "control_mixer.h"
+#include "sensors/imu_driver.h"
+#include "sensors/seeker_interface.h"
+#include "utilities/filter_bank.h"
+#include "hal/hal_system.h" // Assumed system initialization and clock control
 
-void main_loop() {
-    initialize_sensors();
-    initialize_actuators();
-    while (flight_mode == FLIGHT) {
-        // Execute loop at fixed DELTA_T intervals
-        wait_for_timer_interrupt(); 
+// --- Global System Instances (The GNC components) ---
 
-        // 1. Acquire all raw sensor data
-        raw_data = read_sensors(); 
+// 1. Estimator
+static KalmanFilter EKF; 
 
-        // 2. State Estimation and Filtering
-        state_vector = update_kalman_filter(raw_data, DELTA_T);
-        
-        // 3. Guidance Law Execution (Proportional Navigation)
-        GuidanceCommand = calculate_proportional_navigation(state_vector);
+// 2. Guidance
+static ProNavGuidance ProNav;
 
-        // 4. Control Law Execution (PID for stability & maneuver)
-        ActuatorCommands = calculate_control_signals(GuidanceCommand, state_vector);
+// 3. Control (PID Controllers)
+// Inner Loop (Rate Stabilization)
+static PIDController RollRatePID(KP_ROLL_RATE, KI_ROLL_RATE, KD_ROLL_RATE, 
+                                MAX_FIN_DEFLECTION_RAD, 0.5f); // Roll-rate integral windup limit
 
-        // 5. Output Actuator Commands
-        send_to_servos(ActuatorCommands);
+// Outer Loop (Acceleration Tracking) - Uses the same PID logic but different gains
+static PIDController PitchAccelPID(KP_PITCH_ACCEL, KI_PITCH_ACCEL, 0.0f, 
+                                 MAX_FIN_DEFLECTION_RAD, 0.01f); 
+static PIDController YawAccelPID(KP_YAW_ACCEL, KI_YAW_ACCEL, 0.0f, 
+                               MAX_FIN_DEFLECTION_RAD, 0.01f); 
+// Note: Rate control is managed implicitly by the PID outputs and the Control Mixer
+
+// 4. Actuation
+static ControlMixer Mixer;
+
+// 5. Drivers/Interfaces
+static IMUDriver Imu;
+static SeekerInterface Seeker;
+
+// --- GNC Loop Function Prototypes ---
+void GNC_Control_Loop();
+void System_Initialize();
+
+
+/**
+ * @brief The main entry point of the embedded application.
+ * Handles system power-up and sets up the RTOS/Scheduler.
+ */
+int main(void) 
+{
+    // 1. Initialize all peripherals and core systems
+    System_Initialize();
+
+    // 2. Start the GNC loop using a fixed-rate timer interrupt or RTOS task
+    // (This is the critical step for deterministic execution)
+    HAL_Start_Fixed_Rate_Timer(GNC_FREQUENCY_HZ, GNC_Control_Loop); 
+    
+    // 3. Loop forever (or idle if using an RTOS)
+    while (1) {
+        // Lower-priority tasks (Telemetry, Health Monitoring, etc.) run here
+        HAL_Delay_ms(100); 
     }
-    shutdown_system();
+    return 0;
 }
 
-struct StateVector {
-    float roll, pitch, yaw;          // Attitude (Euler Angles or Quaternion)
-    float p, q, r;                   // Angular Rates
-    float ax, ay, az;                // Linear Acceleration (NED frame)
-    float X, Y, Z;                   // Position (E.g., North, East, Down)
-    float Vx, Vy, Vz;                // Velocity
-};
 
-StateVector update_kalman_filter(RawData raw, float dt) {
-    // 1. Prediction Step (Uses Kinematic Model and Gyro/Accel data)
-    // Predicts the next state (X_k+1|k) based on the current state (X_k|k)
-    // and the high-frequency IMU inputs.
+/**
+ * @brief Performs all system-level initialization (GPIO, SPI, Clocks, etc.).
+ */
+void System_Initialize() 
+{
+    // Initialize MCU clock, power, and watchdog timers
+    HAL_System_Init(); 
 
-    // 2. Correction Step (Uses Magnetometer and Seeker Data)
-    // Corrects the predicted state (X_k+1|k) using the noisy measurements (Z_k+1)
-    // from the magnetometer (for attitude correction) and the seeker (for LOS correction).
+    // Initialize communication peripherals used by sensors/actuators
+    HAL_SPI_Init(IMU_SPI_PORT, ...); 
+    HAL_PWM_Init(FIN1_PWM_TIMER, ...);
+
+    // Initialize sensor drivers and perform self-tests
+    if (!Imu.initialize()) {
+        // Log critical failure and enter safe mode
+        while(1) { /* Blink error LED */ }
+    }
     
-    // The seeker data provides the error in the Line-of-Sight (LOS) angle. 
-    // This error feeds directly into the correction step to improve the estimated 
-    // attitude required for PN.
+    // Initialize the EKF (Setting initial P and Q matrices)
+    EKF.initialize(); 
 
-    return filtered_state_vector;
+    // Log initialization complete and wait for arming signal
+    // ...
 }
 
-struct GuidanceCommand {
-    float A_cmd_pitch; // Acceleration command for pitch axis
-    float A_cmd_yaw;   // Acceleration command for yaw axis
-};
 
-GuidanceCommand calculate_proportional_navigation(StateVector state) {
-    // 1. Get raw seeker error from the IR Seeker Interface
-    float Error_pitch = read_seeker_error("pitch"); // e.g., Quadrant differential
-    float Error_yaw = read_seeker_error("yaw");
+/**
+ * @brief The core Guidance and Control function, executed deterministically 
+ * at GNC_FREQUENCY_HZ (e.g., every 4ms).
+ * This function must execute entirely within its time budget!
+ */
+void GNC_Control_Loop()
+{
+    // --- 1. Data Acquisition ---
+    IMUData_t imu_data = Imu.read_data();
+    SeekerData_t seeker_data = Seeker.get_processed_data(); // Assuming seeker processing happens separately or here
 
-    // 2. Calculate the Line-of-Sight (LOS) Angle Rate (lambda_dot)
-    // This is the numerical differentiation of the error signal.
-    static float prev_Error_pitch = 0.0;
-    static float prev_Error_yaw = 0.0;
-
-    float lambda_dot_pitch = (Error_pitch - prev_Error_pitch) / DELTA_T;
-    float lambda_dot_yaw = (Error_yaw - prev_Error_yaw) / DELTA_T;
-
-    prev_Error_pitch = Error_pitch;
-    prev_Error_yaw = Error_yaw;
-
-    // 3. Apply the Proportional Navigation Law
-    // A_c = N * V * lambda_dot
-    #define NAVIGATION_CONSTANT 3.5 // N = 3 to 5 for classic PN
-
-    float V_total = magnitude(state.Vx, state.Vy, state.Vz); // Missile velocity magnitude
-
-    GuidanceCommand cmd;
-    cmd.A_cmd_pitch = NAVIGATION_CONSTANT * V_total * lambda_dot_pitch;
-    cmd.A_cmd_yaw   = NAVIGATION_CONSTANT * V_total * lambda_dot_yaw;
-
-    // Apply saturation limits based on the maximum achievable aerodynamic acceleration 
-    // of the vehicle at its current speed.
-
-    return cmd;
-}
-
-struct ActuatorCommands {
-    float servo_fin_1, servo_fin_2, servo_fin_3, servo_fin_4; // PWM duty cycles
-};
-
-ActuatorCommands calculate_control_signals(GuidanceCommand cmd, StateVector state) {
-    // Inner Loop: Attitude and Rate Stabilization (High Bandwidth)
-    // Goal: Use the gyros to quickly stabilize the vehicle's roll, pitch, and yaw rates.
-    // This is essentially a Stability Augmentation System (SAS).
-
-    // 1. Roll Control Loop (Critical for seeker integrity)
-    // PID calculates required roll torque to maintain roll = 0 or a steady rate.
-    float Roll_Torque_Cmd = PID_Control(state.roll, 0.0, Kp_R, Ki_R, Kd_R);
-
-    // Outer Loop: Acceleration/Angle of Attack Control (Lower Bandwidth)
-    // Goal: Achieve the required pitch/yaw acceleration commanded by the PN law.
-
-    // 2. Pitch Acceleration Loop
-    // The error is (Commanded A_cmd_pitch - Actual state.ay) 
-    float Pitch_Fin_Deflection = PID_Control(cmd.A_cmd_pitch, state.ay, Kp_P, Ki_P, Kd_P);
+    // --- 2. State Estimation (EKF) ---
+    // Predict: Use raw high-rate IMU data and kinematics
+    EKF.predict_step(imu_data); 
     
-    // 3. Yaw Acceleration Loop
-    // The error is (Commanded A_cmd_yaw - Actual state.az)
-    float Yaw_Fin_Deflection = PID_Control(cmd.A_cmd_yaw, state.az, Kp_Y, Ki_Y, Kd_Y);
+    // Correct: Use the seeker LOS angle for the measurement update
+    if (seeker_data.is_locked) {
+        EKF.correct_step(seeker_data);
+    }
     
-    // 4. Mixing and Output Mapping
-    // Mix the Pitch, Yaw, and Roll commands to drive the four individual fins.
-    // This requires a complex transformation matrix based on fin geometry.
+    StateVector_t state = EKF.get_state_estimate();
 
-    ActuatorCommands act_cmd;
-    act_cmd.servo_fin_1 = FinMixing_F1(Pitch_Fin_Deflection, Yaw_Fin_Deflection, Roll_Torque_Cmd);
-    // ... calculate other fins ...
+    // --- 3. Guidance Law (Pro Nav) ---
+    // The PN law needs the LOS angle and the current vehicle velocity from the EKF state.
+    CommandAccel_t accel_command = ProNav.calculate_command(state, seeker_data);
+
+    // --- 4. Control Law (PID) ---
     
-    return act_cmd;
-}
-
-// Kp, Ki, and Kd must be meticulously tuned through simulation and flight testing.
-float PID_Control(float setpoint, float measured_value, float Kp, float Ki, float Kd) {
-    static float integral_error = 0.0;
-    static float previous_error = 0.0;
-
-    float error = setpoint - measured_value;
-
-    // Proportional Term: Immediate response to current error
-    float P_out = Kp * error;
-
-    // Integral Term: Eliminates steady-state error over time
-    integral_error += error * DELTA_T;
-    float I_out = Ki * integral_error;
-
-    // Derivative Term: Damps oscillation and predicts future error
-    float D_out = Kd * (error - previous_error) / DELTA_T;
-
-    previous_error = error;
+    // Calculate required fin deflection based on acceleration error.
+    // NOTE: This assumes a cascade control where the outer PID (Accel) outputs
+    // a deflection, which then directly drives the mixer.
     
-    // Sum the terms and apply saturation limits
-    float output = P_out + I_out + D_out;
-    return saturate(output, -MAX_DEFLECTION, MAX_DEFLECTION);
+    float pitch_deflection_cmd_rad = PitchAccelPID.calculate(
+        accel_command.A_pitch_cmd_M_S2, 
+        state.accel_pitch_mps2 // Measured acceleration from EKF state
+    );
+    
+    float yaw_deflection_cmd_rad = YawAccelPID.calculate(
+        accel_command.A_yaw_cmd_M_S2, 
+        state.accel_yaw_mps2 // Measured acceleration from EKF state
+    );
+    
+    // The Roll PID is run separately to maintain roll stability (Roll Rate to zero setpoint)
+    float roll_deflection_cmd_rad = RollRatePID.calculate(
+        0.0f, // Setpoint of 0.0 rad/s
+        state.roll_rate_rad_s // Measured roll rate from EKF state
+    );
+
+
+    // --- 5. Actuation and Mixing ---
+    // Convert the Pitch, Yaw, and Roll deflection commands into 4 specific PWM outputs.
+    FinCommand_t fin_pwm_commands = Mixer.calculate_commands(
+        pitch_deflection_cmd_rad, 
+        yaw_deflection_cmd_rad, 
+        roll_deflection_cmd_rad
+    );
+
+    // Send the final commands to the hardware registers via the HAL
+    // The function call must be synchronized/atomic.
+    // HAL_PWM_Set_Fins(fin_pwm_commands); 
+    
+    // --- 6. Telemetry and Logging ---
+    // Log the current state and commands to flash/telemetry stream (non-critical)
+    // Telemetry_Log_State(state, accel_command);
 }
