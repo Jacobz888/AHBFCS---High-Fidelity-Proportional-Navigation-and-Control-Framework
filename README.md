@@ -1,6 +1,6 @@
-# 💥 AHBFCS: Autonomous High-Bandwidth Flight Control System
+#  AHBFCS: Autonomous High-Bandwidth Flight Control System
 
-## 🌌 Overview: The Pursuit of Optimized Intercept Trajectories
+##  Overview: The Pursuit of Optimized Intercept Trajectories
 
 The Autonomous High-Bandwidth Flight Control System (AHBFCS) is a theoretical, open-source embedded software framework designed for the rigorous study and implementation of advanced control principles, specifically focusing on the realization of a robust, real-time control loop executing the **Proportional Navigation (PN)** guidance law.
 
@@ -16,6 +16,7 @@ This project serves as an intellectual laboratory for researchers and students i
 ## ⚙️ Architectural Blueprint: The 5-Stage G&C Pipeline
 
 The G&C system is architected as a sequential, deterministic pipeline running on a fixed-rate interrupt timer (targeting $200\text{ Hz}$ to $400\text{ Hz}$). This ensures control stability and responsiveness. 
+
 
 | Stage | Function | Inputs | Output | Key Algorithm |
 | :--- | :--- | :--- | :--- | :--- |
@@ -43,29 +44,30 @@ $$
 * $N$: **Effective Navigation Constant** (Tuned for intercept optimization, typically $N \in [3.0, 5.0]$).
 * $V$: Velocity magnitude of the controlled vehicle.
 * $\dot{\lambda}$: The **LOS angular rate**, calculated via numerical differentiation of the seeker's tracking error: $\frac{\Delta(\text{Error})}{\Delta t}$. This differentiation step is a critical source of noise and requires careful filtering.
+<img width="206" height="197" alt="image" src="https://github.com/user-attachments/assets/4956a841-0d76-40de-8964-6272507296d2" />
+
 
 ### 4.2. Extended Kalman Filter (EKF) Implementation
 
 Given the non-linear dynamics of a high-speed vehicle, an **Extended Kalman Filter (EKF)** is the required approach for high-fidelity state estimation. The EKF must be implemented efficiently on the constrained MCU environment. 
 
-<img width="550" height="492" alt="image" src="https://github.com/user-attachments/assets/94d3059f-25fe-4c9a-bb22-62b1d3790dd9" />
-
-
-
 * **State Vector ($\mathbf{x}$):** Includes 9-15 elements, minimally covering Attitude (Quaternions), Angular Rates, Velocity, and Position.
 * **Process Model ($\mathbf{f}$):** Uses the nonlinear dynamics model of the vehicle (including drag and thrust approximations) to predict the next state.
 * **Measurement Model ($\mathbf{h}$):** Maps the predicted state to the expected sensor readings (IMU, Seeker).
+<img width="237" height="212" alt="image" src="https://github.com/user-attachments/assets/4782870e-5233-495b-b328-178d9d5978aa" />
+
 
 ### 4.3. High-Rate PID Control
 
 The Control Law translates the acceleration command ($A_c$) into the physical deflection of the control fins ($\delta$) using nested PID loops. 
 
-<img width="3999" height="2000" alt="image" src="https://github.com/user-attachments/assets/2a01e617-7fe5-46c9-9194-7607435f832a" />
-
-
-
 * **Inner Loop (SAS):** Controls Pitch/Yaw/Roll **rates** ($p, q, r$). This provides immediate stability augmentation.
 * **Outer Loop (G&C):** Controls Pitch/Yaw **acceleration** ($a_y, a_z$) to track the $A_c$ command from the PN law.
+
+
+<img width="654" height="339" alt="image" src="https://github.com/user-attachments/assets/e30df48a-ee44-4c54-8263-f68b05176e9d" />
+
+
 
 The PID structure:
 $$
@@ -86,7 +88,10 @@ This project targets a high-performance, embedded platform capable of robust rea
 * **Toolchain:** GCC ARM Embedded, CMake for build system generation.
 * **RTOS:** FreeRTOS or a bare-metal implementation to ensure maximum determinism and control over timing.
 
+
 ### 5.2. Core Library Requirements
 
 * **CMSIS-DSP:** For high-speed matrix algebra necessary for the Kalman Filter (e.g., $9 \times 9$ covariance matrices).
 * **Drivers:** Optimized I2C/SPI drivers for high-speed data acquisition from IMUs and ADCs.
+
+
