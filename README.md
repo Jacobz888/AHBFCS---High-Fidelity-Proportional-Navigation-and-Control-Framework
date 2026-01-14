@@ -13,7 +13,7 @@ This project serves as an intellectual laboratory for researchers and students i
 
 ---
 
-## ⚙️ Architectural Blueprint: The 5-Stage G&C Pipeline
+##  Architectural Blueprint: The 5-Stage G&C Pipeline
 
 The G&C system is architected as a sequential, deterministic pipeline running on a fixed-rate interrupt timer (targeting $200\text{ Hz}$ to $400\text{ Hz}$). This ensures control stability and responsiveness. 
 
@@ -28,7 +28,7 @@ The G&C system is architected as a sequential, deterministic pipeline running on
 
 ---
 
-## 🔬 Core Algorithms: Mathematics of Interception
+##  Core Algorithms: Mathematics of Interception
 
 The intellectual value of this project lies in the rigorous implementation of the following algorithms:
 
@@ -78,7 +78,7 @@ Where $e(t)$ is the error between the setpoint (command) and the measured value 
 
 ---
 
-## 🛠️ Dependencies and Setup (Conceptual Environment)
+##  Dependencies and Setup (Conceptual Environment)
 
 This project targets a high-performance, embedded platform capable of robust real-time operations.
 
